@@ -23,40 +23,47 @@ if (EXISTS ${picoVscode})
     include(${picoVscode})
 endif()
 # ====================================================================================
-set(PICO_BOARD pico2_w CACHE STRING "Board type")
+set(PICO_BOARD pico_w CACHE STRING "Board type")
 
 # Pull in Raspberry Pi Pico SDK (must be before project)
 include(pico_sdk_import.cmake)
 
-project(bl00m C CXX ASM)
+project(bl00m-pico C CXX ASM)
 
 # Initialise the Raspberry Pi Pico SDK
 pico_sdk_init()
 
 # Add executable. Default name is the project name, version 0.1
+add_executable(bl00m-pico bl00m-pico.c )
 
-add_executable(bl00m bl00m.c )
+# For tests
+# add_executable(bl00m-pico LDR-tests.c )
+# add_executable(bl00m-pico servo-tests.c )
 
-pico_set_program_name(bl00m "bl00m")
-pico_set_program_version(bl00m "0.1")
+pico_set_program_name(bl00m-pico "bl00m-pico")
+pico_set_program_version(bl00m-pico "0.1")
 
 # Modify the below lines to enable/disable output over UART/USB
-pico_enable_stdio_uart(bl00m 0)
-pico_enable_stdio_usb(bl00m 0)
+pico_enable_stdio_uart(bl00m-pico 0)
+pico_enable_stdio_usb(bl00m-pico 1)
 
 # Add the standard library to the build
-target_link_libraries(bl00m
-        pico_stdlib)
+target_link_libraries(bl00m-pico
+    pico_stdlib
+    hardware_pwm
+    hardware_clocks
+    hardware_adc
+    )
 
 # Add the standard include files to the build
-target_include_directories(bl00m PRIVATE
+target_include_directories(bl00m-pico PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}
 )
 
 # Add any user requested libraries
-target_link_libraries(bl00m 
-        
+target_link_libraries(bl00m-pico 
+        pico_cyw43_arch_none
         )
 
-pico_add_extra_outputs(bl00m)
+pico_add_extra_outputs(bl00m-pico)
 
