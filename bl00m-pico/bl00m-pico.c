@@ -5,7 +5,10 @@
 #include <pico/stdio.h>
 #include <pico/time.h>
 #include <stdint.h>
+#include "hardware/flash.h"
+#include "hardware/sync.h"
 #include <stdio.h>
+#include <string.h>
 
 // For servo control
 #define SERVO_PIN 15
@@ -14,13 +17,28 @@
 #define SERVO_FREQ_HZ 50
 
 #define CLOSED_ANGLE 0.0f
-#define OPENED_ANGLE 180.0f
+#define OPENED_ANGLE 73.0f
+#define STEP 5
+#define PAUSE 300
 
 // For LDR reading
 #define LDR_PIN 26
 #define ADC_INPUT 0
 #define UPPER_THRESHOLD 1800
 #define LOWER_THRESHOLD 1000
+
+#define FLASH_TARGET_OFFSET  (256 * 1024)
+
+// XIP_BASE is the start of flash in the address space
+const uint8_t *flash_base = (const uint8_t *) XIP_BASE;
+const uint8_t *flash_cfg  = (const uint8_t *)(XIP_BASE + FLASH_TARGET_OFFSET);
+
+typedef struct {
+    uint32_t magic;
+    float    angle;
+} config_t;
+
+#define CONFIG_MAGIC 0xABADBEEF
 
 enum state {INITIAL, DARK, BRIGHT, MOVING};
 enum state currentState = INITIAL;
@@ -32,6 +50,36 @@ static uint16_t top_value;
 // For reading LDR value
 const float VREF = 3.3f;
 const float conversion_factor = VREF / (1 << 12);
+
+const config_t *cfg_in_flash = (const config_t *)(XIP_BASE + FLASH_TARGET_OFFSET);
+
+config_t current_cfg;
+
+void load_config(void) {
+    if (cfg_in_flash->magic == CONFIG_MAGIC) {
+        current_cfg = *cfg_in_flash;
+    } else {
+        pwm_set_gpio_level(SERVO_PIN, CLOSED_ANGLE);
+        // defaults
+        current_cfg.magic = CONFIG_MAGIC;
+        current_cfg.angle = CLOSED_ANGLE;
+    }
+}
+
+void save_config(void) {
+    // Prepare a 256-byte page buffer
+    uint8_t page_buf[FLASH_PAGE_SIZE];
+    memset(page_buf, 0xFF, FLASH_PAGE_SIZE);
+    memcpy(page_buf, &current_cfg, sizeof(current_cfg));
+
+    // Critical section: no interrupts during erase/program
+    uint32_t ints = save_and_disable_interrupts();
+
+    flash_range_erase(FLASH_TARGET_OFFSET, FLASH_SECTOR_SIZE);
+    flash_range_program(FLASH_TARGET_OFFSET, page_buf, FLASH_PAGE_SIZE);
+
+    restore_interrupts(ints);
+}
 
 
 // Convert angle (0–180) to PWM level (0–top_value) (stolen from internet)
@@ -87,45 +135,52 @@ int main() {
     top_value = (uint16_t)(pwm_clk_hz / SERVO_FREQ_HZ - 1);
     pwm_set_wrap(slice_num, top_value);
 
+    load_config();
+
     // Start with servo at 0 deg
-    pwm_set_gpio_level(SERVO_PIN, angle_to_level(0.0f));
     pwm_set_enabled(slice_num, true);
+
+    if (current_cfg.angle == CLOSED_ANGLE) {
+        currentState = DARK;
+    } else {
+        currentState = BRIGHT;
+    }
 
     while (true) {
         // Read the LDR value
         uint16_t raw = adc_read();
         float voltage = raw * conversion_factor;
 
-        printf("Raw: %u, Voltage: %.3f V, State: %u\n", raw, voltage, currentState);
+        // printf("Raw: %u, Voltage: %.3f V, State: %u\n", raw, voltage, currentState);
 
         if (raw > UPPER_THRESHOLD && currentState != BRIGHT) {
             // It was dark but it's bright now -> open the flower
             currentState = MOVING;
 
             // Move servo from 0 deg to 180 deg slowly
-            // moveServo(CLOSED_ANGLE, OPENED_ANGLE, 10, 300);
+            moveServo(CLOSED_ANGLE, OPENED_ANGLE, STEP, PAUSE);
 
             // or fast
-            pwm_set_gpio_level(SERVO_PIN, angle_to_level(OPENED_ANGLE));
+            // pwm_set_gpio_level(SERVO_PIN, angle_to_level(OPENED_ANGLE));
+
+            current_cfg.angle = OPENED_ANGLE;
+            save_config();
 
             currentState = BRIGHT;
-        } else if (raw < LOWER_THRESHOLD) {
-            // It is dark
-            if (currentState == INITIAL) {
-                // Servo starts at 0 deg, no need to move
-                currentState = DARK;
-            } else if(currentState != DARK) {
-                // Move the servo from 0 deg to 180 deg
-                currentState = MOVING;
+        } else if (raw < LOWER_THRESHOLD && currentState != DARK) {
+            // Move the servo from 0 deg to 180 deg
+            currentState = MOVING;
 
-                // slowly
-                // moveServo(OPENED_ANGLE, CLOSED_ANGLE, 10, 300);
+            // slowly
+            moveServo(OPENED_ANGLE, CLOSED_ANGLE, STEP, PAUSE);
                 
-                // or fast
-                pwm_set_gpio_level(SERVO_PIN, angle_to_level(CLOSED_ANGLE));
+            // or fast
+            // pwm_set_gpio_level(SERVO_PIN, angle_to_level(CLOSED_ANGLE));
 
-                currentState = DARK;
-            }
+            current_cfg.angle = OPENED_ANGLE;
+            save_config();
+
+            currentState = DARK;
         }
 
         sleep_ms(500);
